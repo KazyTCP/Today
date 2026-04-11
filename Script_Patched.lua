@@ -1,62 +1,23 @@
--- Patched Lua Script for "Watch Number Go Up" Game
--- Includes fixes for debug toggle, cache invalidation, recursion depth limit,
--- remote timeout handling, and proper prestige flag reset logic
+-- Complete Rewritten Code for 'Watch Number Go Up' Roblox Game --
 
-local DebugMode = true -- Set to true to enable debug mode
-local Cache = {}
-local RecursionDepthLimit = 100
-local RemoteTimeout = 30 -- Timeout for remote calls
-local PrestigeFlagReset = false
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 
--- Function to log debug messages
-local function debugLog(message)
-    if DebugMode then
-        print("DEBUG: " .. message)
-    end
+-- Variables
+local currentPlayer = Players.LocalPlayer
+local numberDisplay = workspace.NumberDisplay -- Assuming there's a part named NumberDisplay in the workspace
+local incrementButton = script.Parent.IncrementButton -- Assuming the button is a child of this script
+
+local currentNumber = 0
+
+-- Function to increment and update the display
+local function incrementNumber()
+    currentNumber = currentNumber + 1
+    numberDisplay.Text = tostring(currentNumber)
 end
 
--- Function to handle cache invalidation
-local function invalidateCache()
-    debugLog("Invalidating cache...")
-    Cache = {}
-end
+-- Connect the button click event to the increment function
+incrementButton.MouseButton1Click:Connect(incrementNumber)
 
--- Recursive function with depth limit
-local function recursiveFunction(depth)
-    if depth > RecursionDepthLimit then
-        error("Recursion depth limit reached!")
-    end
-    -- Perform operations...
-    recursiveFunction(depth + 1)
-end
-
--- Function for remote timeout handling
-local function handleRemoteCall()
-    local success, result = pcall(function()
-        -- Simulate remote call
-        wait(RemoteTimeout)
-        return "Remote Call Result"
-    end)
-    if not success then
-        debugLog("Remote call failed: " .. result)
-    else
-        debugLog("Remote call succeeded: " .. result)
-    end
-end
-
--- Function to reset prestige flag
-local function resetPrestigeFlags()
-    PrestigeFlagReset = true
-    debugLog("Prestige flags reset")
-end
-
--- Main function to orchestrate the game logic
-local function main()
-    debugLog("Starting game logic...")
-    invalidateCache()
-    handleRemoteCall()
-    resetPrestigeFlags()
-    recursiveFunction(1)
-end
-
-main()
+-- Initialize display
+numberDisplay.Text = tostring(currentNumber)

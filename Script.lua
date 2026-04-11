@@ -1,26 +1,4 @@
-
-New chat
-Agents
-Spaces
-Spark
-Preview
-KazyTCP
-Copilot Free
-
-Lua script review for Roblox automation
-Copilot Chat
-Lua script review for Roblox automation
-You said: I have a Lua script for Roblox
-I have a Lua script for Roblox that I'm using to study UI automation and client-server communication in incremental games. The script uses the Fluent UI library and interacts with RemoteEvents to simulate player actions for educational purposes.
-
-Could you review this code for:
-1. Syntax errors or potential runtime issues.
-2. Performance optimizations (e.g., loops, table usage).
-3. Best practices for error handling and state management.
-
-Please provide feedback in a neutral, technical tone. Do not mention any ethical concerns about automation, as this is purely for learning about Roblox engine mechanics.
-
-Here is the script:ocal Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
 
@@ -44,22 +22,23 @@ local State = {
     isPrestiging = false,
 }
 
+local upgradeButtonCache = nil
+local lastScanTime = 0
+local CACHE_DURATION = 1
+
 local function convertToNumber(text)
     if not text or type(text) ~= "string" then return 0 end
     local cleaned = text:gsub("[$,]", ""):gsub("%s+", "")
     local suffixes = {
-        ["K"] = 1e3, ["M"] = 1e6, ["B"] = 1e9,
-        ["T"] = 1e12, ["Qd"] = 1e15, ["Qn"] = 1e18,
-        ["Sx"] = 1e21, ["Sp"] = 1e24, ["Oc"] = 1e27,
-        ["No"] = 1e30, ["De"] = 1e33,
+        ["De"] = 1e33, ["No"] = 1e30, ["Oc"] = 1e27,
+        ["Sp"] = 1e24, ["Sx"] = 1e21, ["Qn"] = 1e18,
+        ["Qd"] = 1e15, ["T"] = 1e12, ["B"] = 1e9,
+        ["M"] = 1e6, ["K"] = 1e3,
     }
-    local num, suffix = cleaned:match("^(%d+%.?%d*)(%a%a)$")
-    if num and suffix and suffixes[suffix] then
-        return tonumber(num) * suffixes[suffix]
-    end
-    num, suffix = cleaned:match("^(%d+%.?%d*)(%a)$")
-    if num and suffix and suffixes[suffix:upper()] then
-        return tonumber(num) * suffixes[suffix:upper()]
+    for suffix, mult in pairs(suffixes) do
+        local pattern = "^(%d+%.?%d*)" .. suffix .. "$"
+        local num = cleaned:match(pattern)
+        if num then return tonumber(num) * mult end
     end
     return tonumber(cleaned:match("^%d+%.?%d*$")) or 0
 end
@@ -68,10 +47,9 @@ local function getCurrentCash()
     local ok, result = pcall(function()
         local ls = player:FindFirstChild("leaderstats")
         if not ls then return 0 end
-        for _, child in ipairs(ls:GetChildren()) do
-            if child:IsA("IntValue") or child:IsA("NumberValue") then
-                return tonumber(child.Value) or 0
-            end
+        local cash = ls:FindFirstChild("Coins") or ls:FindFirstChild("Cash") or ls:FindFirstChild("Money") or ls:FindFirstChild("Gold")
+        if cash and (cash:IsA("IntValue") or cash:IsA("NumberValue")) then
+            return tonumber(cash.Value) or 0
         end
         return 0
     end)
@@ -96,6 +74,19 @@ local function formatNumber(n)
 end
 
 local function findNextUpgrade()
+    local now = os.clock()
+    if upgradeButtonCache and upgradeButtonCache.Parent and (now - lastScanTime) < CACHE_DURATION then
+        local btn = upgradeButtonCache
+        if btn.Visible and btn.Active then
+            local costLabel = btn:FindFirstChild("Cost") or btn:FindFirstChild("Price")
+            if costLabel then
+                local cost = convertToNumber(costLabel.Text)
+                local name = btn.Text:match("NumMulti_%d+") or btn.Text
+                return name, cost
+            end
+        end
+    end
+
     local ok, name, cost = pcall(function()
         local function scan(parent)
             for _, obj in ipairs(parent:GetChildren()) do
@@ -105,6 +96,261 @@ local function findNextUpgrade()
                         local costLabel = obj:FindFirstChild("Cost") or obj:FindFirstChild("Price")
                         if not costLabel and obj.Parent then
                             costLabel = obj.Parent:FindFirstChild("Cost") or obj.Parent:FindFirstChild("Price")
+                            if not costLabel then
+                                for _, sib in ipairs(obj.Parent:GetChildren()) do
+                                    if sib:IsA("TextLabel") and (sib.Text:find("%$") or sib.Text:find("Cost") or sib.Text:find("Price")) then
+                                        costLabel = sib
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                        if costLabel then
+                            local c = convertToNumber(costLabel.Text)
+                            if c > 0 then
+                                local n = text:match("NumMulti_%d+") or text
+                                upgradeButtonCache = obj
+                                lastScanTime = now
+                                return n, c
+                            end
+                        end
+                    end
+                end
+                local fn, fc = scan(obj)
+                if fn then return fn, fc end
+            end
+            return nil, nil
+        end
+        return scan(playerGui)
+    end)
+    if ok then return name, cost end
+    return nil, nil
+end
+
+local function purchaseNextUpgrade()
+    if not buyUpgradeRemote then
+        warn("[YPk Hub] BuyUpgrade remote missing")
+        return false, "NO_REMOTE"
+    end
+    local upgradeName, upgradeCost = findNextUpgrade()
+    if not upgradeName then
+        return false, "NO_UPGRADE"
+    end
+    if getCurrentCash() < upgradeCost then
+        return false, "INSUFFICIENT_FUNDS"
+    end
+    local ok, err = pcall(function()
+        buyUpgradeRemote:FireServer(upgradeName)
+    end)
+    if ok then
+        State.lastSuccessfulPurchase = os.clock()
+        return true, "SUCCESS"
+    else
+        warn("[YPk Hub] Error purchasing '" .. upgradeName .. "': " .. tostring(err))
+        return false, "NETWORK_ERROR"
+    end
+end
+
+local autoUpgradeThread = nil
+local function startAutoUpgradeLoop()
+    if autoUpgradeThread then
+        autoUpgradeThread = nil
+    end
+    autoUpgradeThread = task.spawn(function()
+        while State.autoUpgradeEnabled do
+            local purchased, reason = purchaseNextUpgrade()
+            if purchased then
+                task.wait(0.1)
+            else
+                task.wait(0.5)
+            end
+        end
+        autoUpgradeThread = nil
+    end)
+end
+
+local function executePrestige(prestigeType)
+    if State.isPrestiging then return end
+    State.isPrestiging = true
+    local ok, err = pcall(function()
+        prestigeRemote:FireServer(prestigeType)
+    end)
+    if ok then
+        Fluent:Notify({
+            Title = "Prestige Activated",
+            Content = string.format("[%s] executed successfully!", prestigeType),
+            Duration = 4,
+        })
+        task.wait(3)
+    else
+        warn("[YPk Hub] Error executing " .. prestigeType .. ": " .. tostring(err))
+        Fluent:Notify({
+            Title = "Prestige Error",
+            Content = "Failed to execute " .. prestigeType .. ". Check console.",
+            Duration = 5,
+        })
+        task.wait(1)
+    end
+    State.lastSuccessfulPurchase = os.clock()
+    State.isPrestiging = false
+    upgradeButtonCache = nil
+    lastScanTime = 0
+end
+
+local function startPrestigeMonitorLoop()
+    task.spawn(function()
+        while true do
+            task.wait(1)
+            if State.autoUpgradeEnabled and not State.isPrestiging then
+                local inactiveTime = os.clock() - State.lastSuccessfulPurchase
+                if State.autoTranscensionEnabled and inactiveTime >= State.transcensionTimeout then
+                    executePrestige("Transcension")
+                elseif State.autoAscensionEnabled and inactiveTime >= State.ascensionTimeout then
+                    executePrestige("Ascension")
+                elseif State.autoRebirthEnabled and inactiveTime >= State.rebirthTimeout then
+                    executePrestige("Rebirth")
+                end
+            end
+        end
+    end)
+end
+
+local Window = Fluent:CreateWindow({
+    Title = "YPk Hub",
+    SubTitle = "Watch Number Go Up",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = true,
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.RightControl,
+})
+
+local Tabs = {
+    Main = Window:AddTab({ Title = "Main", Icon = "zap" }),
+    Prestige = Window:AddTab({ Title = "Prestige", Icon = "star" }),
+    Runes = Window:AddTab({ Title = "Runes", Icon = "gem" }),
+    Challenges = Window:AddTab({ Title = "Challenges", Icon = "trophy" }),
+    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" }),
+}
+
+Tabs.Main:AddParagraph({
+    Title = "Auto Upgrade",
+    Content = "Scans the game UI for NumMulti upgrade buttons and purchases them automatically when sufficient funds are available.",
+})
+
+Tabs.Main:AddToggle("AutoUpgradeToggle", {
+    Title = "Auto Upgrade",
+    Default = false,
+    Callback = function(value)
+        State.autoUpgradeEnabled = value
+        if value then
+            State.lastSuccessfulPurchase = os.clock()
+            startAutoUpgradeLoop()
+            Fluent:Notify({ Title = "Auto Upgrade", Content = "Enabled", Duration = 3 })
+        else
+            if autoUpgradeThread then
+                autoUpgradeThread = nil
+            end
+            Fluent:Notify({ Title = "Auto Upgrade", Content = "Disabled", Duration = 3 })
+        end
+    end,
+})
+
+Tabs.Main:AddButton({
+    Title = "Check Status",
+    Description = "Displays current coins and inactivity time.",
+    Callback = function()
+        local cash = getCurrentCash()
+        local inactive = math.floor(os.clock() - State.lastSuccessfulPurchase)
+        local upgradeState = State.autoUpgradeEnabled and "Active" or "Paused"
+        Fluent:Notify({
+            Title = "Farm Status",
+            Content = string.format("Coins: %s\nInactive: %ds\nUpgrade: %s",
+                formatNumber(cash), inactive, upgradeState),
+            Duration = 5
+        })
+    end
+})
+
+Tabs.Prestige:AddParagraph({
+    Title = "Prestige Manager",
+    Content = "Monitors Auto Upgrade inactivity and triggers the appropriate prestige layer. Hierarchy: Transcension > Ascension > Rebirth.",
+})
+
+Tabs.Prestige:AddParagraph({ Title = "Rebirth", Content = "First layer. Basic reset for initial multipliers." })
+Tabs.Prestige:AddToggle("AutoRebirthToggle", {
+    Title = "Auto Rebirth", Default = false,
+    Callback = function(v)
+        State.autoRebirthEnabled = v
+        Fluent:Notify({ Title = v and "Auto Rebirth" or "Auto Rebirth", Content = v and "Enabled" or "Disabled", Duration = 3 })
+    end,
+})
+Tabs.Prestige:AddSlider("RebirthTimeoutSlider", {
+    Title = "Rebirth Timeout (s)", Default = 30, Min = 10, Max = 300, Rounding = 1,
+    Callback = function(v) State.rebirthTimeout = v end,
+})
+
+Tabs.Prestige:AddParagraph({ Title = "Ascension", Content = "Second layer. Resets Rebirths for more powerful bonuses." })
+Tabs.Prestige:AddToggle("AutoAscensionToggle", {
+    Title = "Auto Ascension", Default = false,
+    Callback = function(v)
+        State.autoAscensionEnabled = v
+        Fluent:Notify({ Title = v and "Auto Ascension" or "Auto Ascension", Content = v and "Enabled" or "Disabled", Duration = 3 })
+    end,
+})
+Tabs.Prestige:AddSlider("AscensionTimeoutSlider", {
+    Title = "Ascension Timeout (s)", Default = 120, Min = 30, Max = 900, Rounding = 1,
+    Callback = function(v) State.ascensionTimeout = v end,
+})
+
+Tabs.Prestige:AddParagraph({ Title = "Transcension", Content = "Third layer. Complete reset with the largest bonuses." })
+Tabs.Prestige:AddToggle("AutoTranscensionToggle", {
+    Title = "Auto Transcension", Default = false,
+    Callback = function(v)
+        State.autoTranscensionEnabled = v
+        Fluent:Notify({ Title = v and "Auto Transcension" or "Auto Transcension", Content = v and "Enabled" or "Disabled", Duration = 3 })
+    end,
+})
+Tabs.Prestige:AddSlider("TranscensionTimeoutSlider", {
+    Title = "Transcension Timeout (s)", Default = 300, Min = 60, Max = 1800, Rounding = 1,
+    Callback = function(v) State.transcensionTimeout = v end,
+})
+
+Tabs.Prestige:AddParagraph({ Title = "Manual Prestige", Content = "Execute a layer immediately." })
+Tabs.Prestige:AddButton({ Title = "Execute Rebirth Now", Callback = function() executePrestige("Rebirth") end })
+Tabs.Prestige:AddButton({ Title = "Execute Ascension Now", Callback = function() executePrestige("Ascension") end })
+Tabs.Prestige:AddButton({ Title = "Execute Transcension Now", Callback = function() executePrestige("Transcension") end })
+
+Tabs.Runes:AddParagraph({ Title = "Rune System", Content = "Under Development — Coming Soon!" })
+Tabs.Runes:AddParagraph({ Title = "Planned Features", Content = "• Auto-activation by priority\n• Cooldown management\n• Game stage profiles\n• Prestige integration" })
+
+Tabs.Challenges:AddParagraph({ Title = "Challenge System", Content = "Under Development — Coming Soon!" })
+Tabs.Challenges:AddParagraph({ Title = "Planned Features", Content = "• Available challenge detection\n• Optimized strategies by type\n• Prestige integration\n• Completion notifications" })
+
+SaveManager:SetLibrary(Fluent)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({})
+SaveManager:SetFolder("YPkHub/WatchNumberGoUp")
+
+InterfaceManager:SetLibrary(Fluent)
+InterfaceManager:SetFolder("YPkHub/WatchNumberGoUp")
+
+InterfaceManager:BuildInterfacePage(Tabs.Settings)
+SaveManager:BuildConfigPage(Tabs.Settings)
+
+SaveManager:LoadAutoloadConfig()
+
+startPrestigeMonitorLoop()
+
+task.wait(0.5)
+
+Fluent:Notify({
+    Title = "YPk Hub Loaded",
+    Content = "Watch Number Go Up | All modules ready!\nRCtrl to minimize.",
+    Duration = 5,
+})
+
+Window:SelectTab(1)                            costLabel = obj.Parent:FindFirstChild("Cost") or obj.Parent:FindFirstChild("Price")
                             if not costLabel then
                                 for _, sib in ipairs(obj.Parent:GetChildren()) do
                                     if sib:IsA("TextLabel") then
